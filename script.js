@@ -409,7 +409,6 @@ function drawBackground() {
 // -------- Cek apakah titik terlalu dekat ke jalan mana pun --------
 function isTooCloseToRoads(px, py, minDist) {
   for (const e of edges) {
-    // Sample beberapa titik di edge, cek jarak
     const step = Math.max(1, Math.floor(e.pts.length / 8));
     for (let i = 0; i < e.pts.length; i += step) {
       if (dist({x:px,y:py}, e.pts[i]) < minDist) return true;
