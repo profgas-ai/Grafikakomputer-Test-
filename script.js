@@ -329,11 +329,195 @@ function dist(a, b) {
 //  pada zoom tinggi tidak terlihat mengganggu.
 // ============================================================
 
+const GRID_RES = 4;
+let occ = null;
+let OCC_COLS = 0, OCC_ROWS = 0;
+
+function buildOccupancyGrid() {
+  OCC_COLS = Math.ceil(MAP_W / GRID_RES) + 2;
+  OCC_ROWS = Math.ceil(MAP_H / GRID_RES) + 2;
+  occ = new Uint8Array(OCC_COLS * OCC_ROWS);
+
+  // Mark tepi peta sebagai terpakai supaya gedung tidak bisa keluar
+  for (let gx = 0; gx < OCC_COLS; gx++) {
+    for (let gy = 0; gy < OCC_ROWS; gy++) {
+      const px = gx * GRID_RES, py = gy * GRID_RES;
+      if (px < 8 || py < 8 || px > MAP_W - 8 || py > MAP_H - 8)
+        occ[gy * OCC_COLS + gx] = 1;
+    }
+  }
+
+  // Buffer jalan: setengah lebar + shadow luar SVG + margin kecil
+  const bufPx = ROAD_W / 2 + 6 + 6;  // 9+6+6 = 21px
+  const R = Math.ceil(bufPx / GRID_RES);
+
+  for (const e of edges) {
+    for (const pt of e.pts) {
+      const cx = Math.round(pt.x / GRID_RES);
+      const cy = Math.round(pt.y / GRID_RES);
+      for (let dy2 = -R; dy2 <= R; dy2++) {
+        for (let dx2 = -R; dx2 <= R; dx2++) {
+          if (dx2*dx2 + dy2*dy2 > (R+0.5)*(R+0.5)) continue;
+          const gx = cx + dx2, gy = cy + dy2;
+          if (gx >= 0 && gx < OCC_COLS && gy >= 0 && gy < OCC_ROWS)
+            occ[gy * OCC_COLS + gx] = 1;
+        }
+      }
+    }
+  }
+}
+
+// true = seluruh rect bebas (jalan + tepi peta)
+function rectFree(rx, ry, rw, rh) {
+  if (!occ) return false;
+  // Tolak rect yang menyentuh atau melewati tepi peta
+  if (rx < 8 || ry < 8 || rx + rw > MAP_W - 8 || ry + rh > MAP_H - 8) return false;
+  const x0 = Math.floor(rx / GRID_RES);
+  const y0 = Math.floor(ry / GRID_RES);
+  const x1 = Math.ceil((rx + rw) / GRID_RES);
+  const y1 = Math.ceil((ry + rh) / GRID_RES);
+  for (let gy = y0; gy <= y1; gy++) {
+    if (gy < 0 || gy >= OCC_ROWS) return false;
+    for (let gx = x0; gx <= x1; gx++) {
+      if (gx < 0 || gx >= OCC_COLS) return false;
+      if (occ[gy * OCC_COLS + gx]) return false;
+    }
+  }
+  return true;
+}
+
+function markRect(rx, ry, rw, rh, pad) {
+  pad = pad || 3;
+  const x0 = Math.floor((rx - pad) / GRID_RES);
+  const y0 = Math.floor((ry - pad) / GRID_RES);
+  const x1 = Math.ceil((rx + rw + pad) / GRID_RES);
+  const y1 = Math.ceil((ry + rh + pad) / GRID_RES);
+  for (let gy = y0; gy <= y1; gy++) {
+    if (gy < 0 || gy >= OCC_ROWS) continue;
+    for (let gx = x0; gx <= x1; gx++) {
+      if (gx < 0 || gx >= OCC_COLS) continue;
+      occ[gy * OCC_COLS + gx] = 1;
+    }
+  }
+}
+
+function drawBuilding(ctx, bx, by, bw, bh, rng2) {
+  if (bw < 10 || bh < 10) return;
+
+  const hue = 220 + rng2() * 60;
+
+  // Bayangan tipis (efek 3D)
+  ctx.fillStyle = 'rgba(0,0,0,0.28)';
+  ctx.fillRect(bx + 2, by + 2, bw, bh);
+
+  // Tembok utama
+  ctx.fillStyle = `hsl(${hue},25%,22%)`;
+  ctx.fillRect(bx, by, bw, bh);
+
+  // Atap (sedikit lebih terang, inset)
+  ctx.fillStyle = `hsl(${hue},30%,30%)`;
+  const rm = Math.min(4, Math.floor(bw * 0.12), Math.floor(bh * 0.12));
+  ctx.fillRect(bx+rm, by+rm, bw-rm*2, bh-rm*2);
+
+  // Garis tepi atap
+  ctx.fillStyle = `hsl(${hue},20%,35%)`;
+  ctx.fillRect(bx+rm, by+rm, bw-rm*2, 1);
+  ctx.fillRect(bx+rm, by+rm, 1, bh-rm*2);
+
+  // Jendela — grid merata, ukuran proporsional bangunan
+  if (bw >= 16 && bh >= 16) {
+    const wSize = Math.max(3, Math.min(5, Math.floor(bw / 6)));
+    const wGap  = wSize + 5;
+    const startX = bx + rm + 3;
+    const startY = by + rm + 3;
+    const endX   = bx + bw - rm - wSize - 1;
+    const endY   = by + bh - rm - wSize - 1;
+
+    for (let wy = startY; wy <= endY; wy += wGap) {
+      for (let wx = startX; wx <= endX; wx += wGap) {
+        if (rng2() > 0.35) {
+          // Cahaya nyala (kuning terang)
+          ctx.fillStyle = rng2() > 0.3
+            ? `rgba(180,220,255,0.7)`   // cahaya putih-biru
+            : `rgba(255,230,120,0.6)`;  // cahaya kuning (lampu menyala)
+          ctx.fillRect(wx, wy, wSize, wSize);
+          // Bingkai jendela
+          ctx.fillStyle = `hsl(${hue},15%,40%)`;
+          ctx.fillRect(wx - 1, wy - 1, 1, wSize + 2);
+          ctx.fillRect(wx - 1, wy - 1, wSize + 2, 1);
+        } else {
+          // Jendela gelap (tidak menyala)
+          ctx.fillStyle = `rgba(10,15,25,0.8)`;
+          ctx.fillRect(wx, wy, wSize, wSize);
+        }
+      }
+    }
+  }
+
+  // Detail atap — hanya jika cukup besar
+  if (bw >= 28 && bh >= 28) {
+    const detailR = rng2();
+
+    if (detailR < 0.4) {
+      // Tangki air (kotak kecil di atas)
+      const tw = Math.max(4, Math.floor(bw * 0.18));
+      const th = Math.max(3, Math.floor(bh * 0.12));
+      const tx2 = bx + rm + Math.floor(rng2() * (bw - rm*2 - tw - 2));
+      const ty2 = by + rm + 1;
+      ctx.fillStyle = `hsl(${hue},15%,38%)`;
+      ctx.fillRect(tx2, ty2, tw, th);
+      ctx.fillStyle = `hsl(${hue},10%,45%)`;
+      ctx.fillRect(tx2+1, ty2, tw-2, 2);
+    } else if (detailR < 0.7) {
+      // Antena / menara kecil
+      const ax = bx + bw/2 + (rng2()-0.5) * bw * 0.3;
+      const ay = by + rm + 1;
+      ctx.fillStyle = `hsl(${hue},10%,50%)`;
+      ctx.fillRect(Math.floor(ax) - 1, Math.floor(ay), 2, Math.max(3, Math.floor(bh*0.1)));
+      // Lingkaran kecil di ujung antena
+      ctx.beginPath();
+      ctx.arc(ax, ay, 2, 0, Math.PI*2);
+      ctx.fillStyle = `rgba(255,80,80,0.8)`;
+      ctx.fill();
+    } else {
+      // Panel AC (kotak horizontal kecil)
+      const aw = Math.max(6, Math.floor(bw * 0.25));
+      const ah = Math.max(3, Math.floor(bh * 0.08));
+      const acx = bx + bw - rm - aw - 1;
+      const acy = by + bh - rm - ah - 2;
+      ctx.fillStyle = `hsl(200,30%,35%)`;
+      ctx.fillRect(acx, acy, aw, ah);
+      ctx.fillStyle = `hsl(200,20%,45%)`;
+      for (let li = 0; li < aw; li += 3) ctx.fillRect(acx + li, acy, 1, ah);
+    }
+  }
+
+  // Outline gedung
+  ctx.strokeStyle = `hsl(${hue},20%,40%)`;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(bx, by, bw, bh);
+
+  // Pintu masuk (di gedung yang cukup besar, di bagian bawah)
+  if (bw >= 20 && bh >= 24) {
+    const doorW = Math.min(7, Math.floor(bw * 0.2));
+    const doorH = Math.min(8, Math.floor(bh * 0.18));
+    const doorX = bx + Math.floor((bw - doorW) / 2);
+    const doorY = by + bh - doorH;
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(doorX, doorY, doorW, doorH);
+    // Bingkai pintu
+    ctx.fillStyle = `hsl(${hue},15%,42%)`;
+    ctx.fillRect(doorX - 1, doorY - 1, 1, doorH + 1);
+    ctx.fillRect(doorX + doorW, doorY - 1, 1, doorH + 1);
+    ctx.fillRect(doorX - 1, doorY - 1, doorW + 2, 1);
+  }
+}
+
 function drawBackground() {
   const ctx = bgCtx;
   ctx.clearRect(0, 0, MAP_W, MAP_H);
 
-  // Base: tanah / lapangan
+  // ── Base: tanah / lapangan ───────────────────────────────────
   ctx.fillStyle = '#1a2e1a';
   ctx.fillRect(0, 0, MAP_W, MAP_H);
 
@@ -347,73 +531,129 @@ function drawBackground() {
     }
   }
 
-  // Blok taman (patch hijau lebih terang)
+  if (nodes.length < 2) return;
+
+  // ── 1. Bangun occupancy grid (jalan + border peta) ───────────
+  buildOccupancyGrid();
+
+  // ── 2. Blok taman hijau ──────────────────────────────────────
   const rng = seededRand(42);
   for (let i = 0; i < 22; i++) {
-    const px = rng() * (MAP_W - 120) + 40;
-    const py = rng() * (MAP_H - 100) + 40;
     const pw = 60 + rng() * 80;
     const ph = 50 + rng() * 70;
+    const px = rng() * (MAP_W - pw - 100) + 50;
+    const py = rng() * (MAP_H - ph - 100) + 50;
+    const angle = rng() * Math.PI;
+    if (!rectFree(px, py, pw, ph)) { rng(); continue; }
+    markRect(px, py, pw, ph, 4);
     ctx.fillStyle = `rgba(56,161,105,${0.18 + rng() * 0.12})`;
     ctx.beginPath();
-    ctx.ellipse(px + pw/2, py + ph/2, pw/2, ph/2, rng() * Math.PI, 0, Math.PI*2);
+    ctx.ellipse(px + pw/2, py + ph/2, pw/2, ph/2, angle, 0, Math.PI*2);
     ctx.fill();
   }
 
-  // Gedung-gedung (blok persegi panjang acak di area non-jalan)
+  // ── 3. GEDUNG — scan sistematis seluruh peta ─────────────────
+  //  Scan tiap STEP px. Di tiap slot kosong, coba tumbuhkan gedung.
+  //  Ukuran gedung bervariasi (1–4 slot) agar terasa organik.
   const rng2 = seededRand(99);
-  for (let i = 0; i < 55; i++) {
-    const bx = rng2() * (MAP_W - 160) + 60;
-    const by = rng2() * (MAP_H - 140) + 60;
-    const bw = 28 + rng2() * 52;
-    const bh = 24 + rng2() * 48;
+  const STEP = 22;
 
-    // Cek jarak ke semua edge — jangan render gedung di atas jalan
-    if (isTooCloseToRoads(bx + bw/2, by + bh/2, Math.max(bw,bh)/2 + ROAD_W)) continue;
+  for (let sy = MARGIN / 2; sy < MAP_H - MARGIN / 2; sy += STEP) {
+    for (let sx = MARGIN / 2; sx < MAP_W - MARGIN / 2; sx += STEP) {
 
-    // Tembok gedung
-    const hue = 220 + rng2() * 60;
-    ctx.fillStyle = `hsl(${hue},25%,22%)`;
-    ctx.fillRect(bx, by, bw, bh);
+      // Lewati slot terpakai
+      if (!rectFree(sx, sy, STEP - 2, STEP - 2)) { rng2(); rng2(); continue; }
 
-    // Atap
-    ctx.fillStyle = `hsl(${hue},30%,30%)`;
-    const rm = 4;
-    ctx.fillRect(bx+rm, by+rm, bw-rm*2, bh-rm*2);
+      // Ukuran gedung: 1–4 slot horizontal, 1–4 slot vertikal
+      const maxC = Math.floor(rng2() * 4) + 1;
+      const maxR2 = Math.floor(rng2() * 4) + 1;
 
-    // Jendela kecil
-    ctx.fillStyle = `rgba(160,200,255,0.55)`;
-    const wSize = 5;
-    for (let wy = by+8; wy < by+bh-8; wy += 10) {
-      for (let wx = bx+8; wx < bx+bw-8; wx += 10) {
-        if (rng2() > 0.4) ctx.fillRect(wx, wy, wSize, wSize);
+      // Tumbuhkan sebesar mungkin tapi tetap bebas
+      let bestW = 0, bestH = 0;
+      for (let tc = 1; tc <= maxC; tc++) {
+        const tw = tc * STEP - 4;
+        const th = maxR2 * STEP - 4;
+        if (sx + 2 + tw > MAP_W - 8) break;
+        if (sy + 2 + th > MAP_H - 8) break;
+        if (rectFree(sx + 2, sy + 2, tw, th)) { bestW = tw; bestH = th; }
+        else break;
       }
-    }
 
-    // Tepi gedung
-    ctx.strokeStyle = `hsl(${hue},20%,40%)`;
-    ctx.lineWidth = 1;
-    ctx.strokeRect(bx, by, bw, bh);
+      if (bestW < 10 || bestH < 10) continue;
+
+      const bx = sx + 2, by = sy + 2;
+      markRect(bx, by, bestW, bestH, 3);
+      drawBuilding(ctx, bx, by, bestW, bestH, rng2);
+    }
   }
 
-  // Pohon-pohon di area taman
   const rng3 = seededRand(77);
-  for (let i = 0; i < 90; i++) {
-    const tx = rng3() * MAP_W;
-    const ty = rng3() * MAP_H;
-    if (isTooCloseToRoads(tx, ty, ROAD_W + 8)) continue;
-    drawTree(ctx, tx, ty, 5 + rng3() * 5);
+
+  // (a) Pohon di pinggir jalan — rapat
+  for (const e of edges) {
+    const step = Math.max(1, Math.floor(e.pts.length / 12));
+    for (let i = step; i < e.pts.length - step; i += step) {
+      for (let side = -1; side <= 1; side += 2) {  // kedua sisi jalan
+        if (rng3() > 0.65) continue;
+        const pt   = e.pts[i];
+        const prev = e.pts[Math.max(0, i - 1)];
+        const dx   = pt.x - prev.x;
+        const dy   = pt.y - prev.y;
+        const len  = Math.sqrt(dx*dx + dy*dy) || 1;
+        const nx2  = -dy / len;
+        const ny2  =  dx / len;
+        const off  = ROAD_W / 2 + 7 + rng3() * 4;
+        const tx   = pt.x + nx2 * off * side;
+        const ty   = pt.y + ny2 * off * side;
+        if (tx < 8 || ty < 8 || tx > MAP_W-8 || ty > MAP_H-8) continue;
+        const nearNode = nodes.some(n => dist({x:tx,y:ty}, n) < ROAD_W + 10);
+        if (nearNode) continue;
+        const ts = 4 + rng3() * 4;
+        if (!rectFree(tx-ts, ty-ts, ts*2, ts*2)) continue;
+        markRect(tx-ts, ty-ts, ts*2, ts*2, 1);
+        drawTree(ctx, tx, ty, ts);
+      }
+    }
+  }
+
+  // (b) Pohon di area kosong — scan lebih padat
+  for (let sy2 = 15; sy2 < MAP_H - 15; sy2 += 28) {
+    for (let sx2 = 15; sx2 < MAP_W - 15; sx2 += 28) {
+      if (rng3() > 0.55) { rng3(); continue; }
+      const ts = 5 + rng3() * 5;
+      const tx = sx2 + rng3() * 14 - 7;
+      const ty = sy2 + rng3() * 14 - 7;
+      if (tx < 8 || ty < 8 || tx > MAP_W-8 || ty > MAP_H-8) continue;
+      if (!rectFree(tx-ts, ty-ts, ts*2, ts*2)) continue;
+      markRect(tx-ts, ty-ts, ts*2, ts*2, 1);
+      drawTree(ctx, tx, ty, ts);
+    }
   }
 }
 
 // -------- Cek apakah titik terlalu dekat ke jalan mana pun --------
 function isTooCloseToRoads(px, py, minDist) {
+  // pakai squared distance supaya lebih cepat
+  const minDistSq = minDist * minDist;
+
   for (const e of edges) {
-    const step = Math.max(1, Math.floor(e.pts.length / 8));
+
+    // sampling titik jalan
+    const step =
+      Math.max(1, Math.floor(e.pts.length / 8));
+
     for (let i = 0; i < e.pts.length; i += step) {
-      if (dist({x:px,y:py}, e.pts[i]) < minDist) return true;
+
+      const dx = px - e.pts[i].x;
+      const dy = py - e.pts[i].y;
+      const distSq = dx * dx + dy * dy;
+
+      if (distSq < minDistSq) {
+        return true;
+      }
     }
   }
+
   return false;
 }
 
